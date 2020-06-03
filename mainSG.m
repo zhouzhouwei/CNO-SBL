@@ -1,14 +1,14 @@
 clear; clc;
 addpath('tools\')
 MyData = load('Dataset\SGdata15points.mat');
-nums = 100 ; num_method= 2;
-filename = 'ResultsData\SG_CMres_15.mat' ;
+nums = 100 ; num_method= 3;
+filename = 'ResultsData\SG_CMres_5NN.mat' ;
 rng(1) 
 
-Dic = MyData.theta ;
+Phi = MyData.theta ;
 Y = MyData.y ;
-W = MyData.w_true;
-n_variables = size(Y,2);
+w = MyData.w_true;
+[ids0,~] = find(w) ;
 
 % parameters
 paras.a0 = 1e-6;       paras.b0 = 1e-6;
@@ -16,92 +16,132 @@ paras.c0 = 1+1e-6;     paras.d0 = 1e-6 ;
 paras.iters = 5000;    paras.threshold = 1e-3;
 paras.delta = 1e-5 ;   % for stopping criterion
 paras.normalized = 1 ;
-paras.NN_number = 10 ;
+paras.NN_number = 5 ;
 paras.max_iterions = 10;
 Tstep = 1e-7 ;
 paras.Tspan = 0:Tstep:1e-4 ;
 tau = 1e-4 ;
+delta3 = 0.01 ;
 if paras.normalized==0
-    s0 = max(eig(Dic'*Dic)) + tau;
+    s0 = max(eig(Phi'*Phi)) + tau;
 else
-    s0 = max(eig(normc(Dic)'*normc(Dic))) + tau ;
+    s0 = max(eig(normc(Phi)'*normc(Phi))) + tau ;
 end
 paras.a = s0;
-[~,n] = size(Dic);
+[~,n] = size(Phi);
 
 % storage the results
-time_SBL = zeros(nums, n_variables, num_method);
-Nzeros_num = zeros(nums,n_variables,num_method) ;
-L = zeros(nums,n_variables,num_method) ;
-errs = zeros(nums,num_method);
-W_hats = cell(nums,2);
-Lgs = cell(nums,n_variables) ;
+time_SBL = zeros(nums, num_method);
+errs = zeros(nums, num_method);
+num_success = zeros(1, num_method);
+Iterations = zeros(nums,2);
+Nzeros_num = zeros(nums,num_method) ;
+Lgs = cell(nums,1);
+L = zeros(nums,num_method) ;
+W_hats = cell(nums,1);
 
-% main loop 
-for kk=1:nums
-    fprintf('The %d th experiment:\n',kk) ; 
-    W_est1 = zeros(size(W)) ;
-    W_est2 = zeros(size(W)) ;
-    for ii = 1:n_variables
-        y = Y(:,ii);
-        
-        % method 1 
-        tic 
-        [W_est1(:,ii),objVal] = SBL_PNN2_ode23s_CM(y, Dic, paras) ;
-        time_SBL(kk,ii,1) = toc ;
-        L(kk,ii,1) = objVal(end) ;
-        Lgs{kk,ii} = objVal ;
-        Nzeros_num(kk,ii,1) = length(nonzeros(W_est1(:,ii)));
-        
-        % method 2
-        InitVal.beta_init = randn(n,1);
-        InitVal.gamma_init= rand(1);
-        InitVal.lambda_init = rand(1);        
-        tic ;
-        [W_est2(:,ii), ~, L(kk,ii,2)] = Ga_FSBL(y, Dic, paras, InitVal) ;
-        time_SBL(kk,ii,2) = toc ;
-        Nzeros_num(kk,ii,2) = length(nonzeros(W_est2(:,ii)));
+fprintf(2,'The matrix has %d basis functions:\n',n) ;
+
+% main loop
+for kk = 1:nums    
+    xhat = zeros(n,num_method-1);
+    fprintf('The %d th experiment:\n',kk) ;    
+   
+    InitVal.beta_init = randn(n,1);
+    InitVal.gamma_init= rand(1);
+    InitVal.lambda_init = rand(1);
+    
+    
+    % PNN 
+    ii = 2 ;    % index of method
+    tic
+    [xhat(:,ii),L(kk,ii)] = PNN_ode23s(Y, Phi, paras, InitVal) ;
+    time_SBL(kk,ii) = toc ;
+    errs(kk,ii) = norm(xhat(:,ii)-w)/norm(w) ;
+    [ids,~] = find (xhat(:,ii)) ; 
+    if (norm(xhat(:,ii)-w,'inf')/norm(w)<=delta3) && all(ids==ids0)
+        num_success(1,ii) = num_success(1,ii)+1;
     end
-    errs(kk,1) = mean(vecnorm(W_est1 - W)./vecnorm(W));
-    errs(kk,2) = mean(vecnorm(W_est2 - W)./vecnorm(W));
-    W_hats{kk,1} = W_est1 ;
-    W_hats{kk,2} = W_est2 ;
+    Nzeros_num(kk,ii) = length(nonzeros(xhat(:,ii))); 
+    
+    
+    % S-ESBL
+    ii = ii + 1;   
+    tic
+    [xhat(:,ii),Iterations(kk,2),L(kk,ii)] = Ga_FSBL(Y, Phi, paras, InitVal) ;
+    time_SBL(kk,ii) = toc ;
+    errs(kk,ii) = norm(xhat(:,ii)-w)/norm(w) ;
+    [ids,~] = find(xhat(:,ii)) ; 
+    if (norm(xhat(:,ii)-w,'inf')/norm(w)<=delta3) && all(ids==ids0)
+        num_success(1,ii) = num_success(1,ii)+1;
+    end
+    Nzeros_num(kk,ii) = length(nonzeros(xhat(:,ii)));    
+
+    % the estimated signals
+    W_hats{kk,1} = xhat ;  
 end
+
+
+for kk=1:nums
+    xhat = zeros(n,num_method);
+    fprintf('The %d th experiment:\n',kk) ;    
+    % SBL based on CNO
+    ii = 1;
+    tic ;
+    [xhat(:,ii),objVal] = SBL_PNN2_ode23s_CM(Y, Phi, paras) ;
+    time_SBL(kk,ii) = toc ;
+    L(kk,ii) = objVal(end) ;
+    Lgs{kk,1} = objVal ;
+    Iterations(kk,1) = length(objVal) ;
+    errs(kk,ii) = norm(xhat(:,ii)-w)/norm(w) ;
+    [ids,~] = find (xhat(:,ii)) ; 
+    if (norm(xhat(:,ii)-w,'inf')/norm(w)<=delta3) && all(ids==ids0)
+        num_success(1,ii) = num_success(1,ii)+1;
+    end
+    Nzeros_num(kk,ii) = length(nonzeros(xhat(:,ii)));
+    
+    % the estimated signals
+    W_hats{kk,2} = xhat ;   
+end
+
 
 % the average results
 err_mean = mean(errs);
 err_std = std(errs,1);
 time_mean = mean(time_SBL);
-time_mean = squeeze(time_mean) ;
-disp('the average error is:') 
-disp(err_mean);
+Nzeros_mean = mean(Nzeros_num);
+Iter_mean = mean(Iterations) ;
 
-% end tone 
+disp('the average error is :') 
+disp(err_mean) 
+
 sound(sin(2*pi*25*(1:4000)/100));
 
-%save results 
 save(filename) ;
 
-%%  plot figures 
-markers = {'o','s','>','v'};
+
+%%   plot figures
+markers = {'o','s','d','v'};
+colors = {[0 0.4470 0.7410],[0.8500 0.3250 0.0980],[0.9290 0.6940 0.1250]} ;
 figure()
 for i=1:num_method
-    scatter(1:nums,L(:,i),markers{i},'linewidth',2);
+    scatter(1:nums,L(:,i),markers{i},'filled','MarkerEdgeColor',colors{i})
+    %,'MarkerEdgeColor','k','MarkerFaceColor',colors{i});
     hold on
 end
 set(gca,'FontSize',12)
-legend('CNO-SBL','S-ESBL')
+legend('CNO-SBL','PNN','S-ESBL')
 xlabel('Sequence Number of Experimental Runs')
 ylabel('Objective Functin Value')
 grid on
 
 
-Lgi = Lgs{4,1};
-iters = length(Lgi)-1;
-figure()
-plot(0:iters,Lgi,'LineWidth',2)
-set(gca,'FontSize',12)
-xlabel('Iterations')
-ylabel('Objective Functin Value')
-% ylabel('$\widehat{L}(u_g)$','interpreter','latex')
-grid on
+% Lgi = Lgs{4,1};
+% iters = length(Lgi)-1;
+% figure()
+% plot(0:iters,Lgi,'LineWidth',2)
+% set(gca,'FontSize',12)
+% xlabel('Iterations')
+% ylabel('Objective Functin Value')
+% % ylabel('$\widehat{L}(u_g)$','interpreter','latex')
+% grid on
